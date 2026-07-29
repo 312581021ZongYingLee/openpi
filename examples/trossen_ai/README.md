@@ -53,11 +53,25 @@ uv run python -c "import torch, lerobot; print('OK', torch.__version__, lerobot.
 | 微調後模型 | `Zong-Ying/pi05_banana_towel` | π0.5 expert-only 微調，30k steps |
 | 底模（供微調/對照） | `lerobot/pi05_base` | 官方未微調 π0.5（釘 revision `a538eb27...`） |
 
-拉資料集下來看（會進 `~/.cache/huggingface/lerobot/`）：
+### 下載資料集
+> ⚠️ 本資料集是 **private**：先 `uv run hf auth login`，且該 HF 帳號要有存取權（跟 Zong-Ying 要 collaborator，或把 repo 改 public，或換成你自己的資料集）。
+
+**方法 A — 直接用**（LeRobot 首次載入會自動下載到 `~/.cache/huggingface/lerobot/`）：
 ```bash
 uv run python -c "from lerobot.datasets.lerobot_dataset import LeRobotDataset; LeRobotDataset('Zong-Ying/banana_towel_right_arm')"
+```
+**方法 B — 用 `hf` 指令拉到指定資料夾**（注意 `--repo-type dataset`）：
+```bash
+uv run hf download Zong-Ying/banana_towel_right_arm --repo-type dataset \
+    --local-dir ~/datasets/banana_towel_right_arm
+```
+**逐集視覺化檢查**（影像＋關節曲線）：
+```bash
 uv run lerobot-dataset-viz --repo-id Zong-Ying/banana_towel_right_arm --episode-index 0
 ```
+
+模型不用手動抓：推論時 `single_arm_test.py --repo_id Zong-Ying/pi05_banana_towel` 會自動下載；
+只有 base 對照組要先 `hf download lerobot/pi05_base --revision ...`（見〈base 未微調〉段）。
 
 ---
 
