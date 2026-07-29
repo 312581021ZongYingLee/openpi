@@ -1,276 +1,172 @@
+# Trossen AI (Mobile ALOHA) × π0.5 實作 pipeline — 實驗室交接文件
 
-# OpenPi – Training & Evaluating a Policy with LeRobot
+給接手實驗室 Trossen AI / Mobile ALOHA 的學弟妹：這份帶你把整條 VLA pipeline 跑起來——
+**推論公開模型 → 遙操作收自己的資料 → 微調 π0.5 → 部署回真機**。所有腳本都在本資料夾，
+在實驗室真機驗證過（2026-07，任務：夾香蕉放藍色毛巾，微調後自主成功率 70%）。
 
-This guide walks you through collecting episodes, training with OpenPi, fine-tuning using LoRA, evaluating, and running inference.
+> 📦 **重要觀念：程式碼在 GitHub、資料集與模型權重在 HuggingFace Hub。**
+> 這個 repo **不含**任何資料集或權重（那些有數十 GB，且 Hub 才是它們的家）。需要時用下方指令從 Hub 拉。
+>
+> 🔗 **本專案基礎**：建在 [TrossenRobotics/openpi](https://github.com/TrossenRobotics/openpi) 的 `examples/trossen_ai` 上，
+> 用 [TrossenRobotics/lerobot_trossen](https://github.com/TrossenRobotics/lerobot_trossen)（Trossen AI / Mobile ALOHA 的 LeRobot plugin）驅動手臂，
+> 模型來自 [lerobot/pi05_base](https://huggingface.co/lerobot/pi05_base)（openpi π0.5 的 LeRobot 移植）。完整來源見文末〈來源 / 上游專案〉。
 
-> **Note:**
-> - This example uses two different versions of LeRobot:
->   - **LeRobot V0.1.0** for training and dependency management.
->   - **LeRobot V0.3.2** for running the client and inference.
-> - The custom LeRobot V0.3.2 (with BiWidowXAIFollower support) is available on GitHub:
->   [Interbotix/lerobot – `trossen_ai_open_pi` branch](https://github.com/Interbotix/lerobot/tree/trossen_ai_open_pi)
-> - **LeRobot V0.1.0** is installed at `.venv/lib/python3.11/site-packages/lerobot`.
-> - **LeRobot V0.3.2** is installed at `examples/trossen_ai/.venv/lib/python3.11/site-packages/lerobot`.
-> - **Training commands** should be run from the project root to use LeRobot V0.1.0.
-> - **Client commands** should be run from the `examples/trossen_ai` directory to use LeRobot V0.3.2.
-> - This setup works because `uv` manages dependencies in isolated virtual environments for each project.
+---
 
-## Collect episodes using LeRobot
+## 0. 硬體與環境
 
-We collect episodes using ``Interbotix/lerobot`` for more information on installation and recording episodes check the following:
-1. [Installation](https://docs.trossenrobotics.com/trossen_arm/main/tutorials/lerobot/setup.html)
-2. [Recording Episode](https://docs.trossenrobotics.com/trossen_arm/main/tutorials/lerobot/record_episode.html)
+### 硬體速查
+| 設備 | 識別 |
+|---|---|
+| 右 follower 臂（執行動作） | IP `192.168.1.4` |
+| 右 leader 臂（遙操作手把） | IP `192.168.1.2` |
+| 左 follower / 左 leader | `192.168.1.5` / `192.168.1.3`（本 pipeline 未用） |
+| top 相機（塔架 D405） | serial `230422271207` |
+| 右腕相機（D405） | serial `315122271274` |
+| 左腕相機（D405） | serial `315122272759`（腳本的預設值，用右臂時要覆寫掉） |
 
-Here is a recorded dataset using the above instructions:
+### 兩台機器
+| 機器 | 用途 | 環境 | 指令前綴 |
+|---|---|---|---|
+| 4080 筆電（Ubuntu 22.04, 12GB GPU） | 收資料＋推論部署 | `uv`（見下） | `uv run ...` |
+| 5090 伺服器（Windows+WSL） | 微調訓練 | `conda activate lerobot` | 直接執行（不用 uv run） |
 
-[Recorded Dataset](https://huggingface.co/datasets/TrossenRoboticsCommunity/bimanual-widowxai-handover-cube)
-
-
-You can also visualize the dataset using the following link, just paste the dataset name here:
-
-[Visualize using this](https://huggingface.co/spaces/lerobot/visualize_dataset)
-
-
-## Install UV
-
-Follow the [UV installation instructions](https://docs.astral.sh/uv/getting-started/installation/) to set it up.
-
-## OpenPi Setup
-
-When cloning this repo, make sure to update submodules:
-
+### 環境安裝（筆電）
+本資料夾用 [uv](https://docs.astral.sh/uv/) 管理，`uv.lock` 已鎖定所有版本，一鍵重建：
 ```bash
-git clone --recurse-submodules git@github.com:TrossenRobotics/openpi.git
-
-# Or if you already cloned the repo:
-git submodule update --init --recursive
-```
-
-We use [uv](https://docs.astral.sh/uv/) to manage Python dependencies. See the [uv installation instructions](https://docs.astral.sh/uv/getting-started/installation/) to set it up. Once uv is installed, run the following to set up the environment:
-
-```bash
-GIT_LFS_SKIP_SMUDGE=1 uv sync
-GIT_LFS_SKIP_SMUDGE=1 uv pip install -e .
-```
-
-NOTE: `GIT_LFS_SKIP_SMUDGE=1` is needed to pull LeRobot as a dependency.
-
-## Training
-
-Once you have recorded your dataset, you can begin training using the command below. We provide a custom training configuration for the Trossen AI dataset. Since the Aloha Legacy and Trossen AI Stationary share the same joint layout, this configuration is compatible. Explicit support for Trossen AI will be added in the future.
-
-Run this command from the project root. This is for dependency management. We have to use LeRobot V0.1.0.
-
-```bash
-cd openpi
-```
-
-Example:
-
-```bash
-XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 uv run scripts/train.py pi05_trossen_organize_tools --exp-name=pi05_trossen_organize_tools --overwrite
-```
-
-## Custom Training Configuration
-
-To add a custom training configuration, edit the `openpi/src/training/config.py` file. You can define your own `TrainConfig` with specific model parameters, dataset sources, prompts, and training options. After updating the configuration, reference your new config name in the training command:
-
-```bash
-XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 uv run scripts/train.py <your_custom_config_name> --exp-name=my_experiment --overwrite
-```
-
-This allows you to tailor the training process to your dataset and requirements.
-
-
-Here is an example configuration for training on the Trossen AI dataset:
-
-
-The camera mapping are used to map the camera names in the dataset to the expected input names for the Pi-0 model.
-In this example the dataset has 4 cameras: top, bottom, left and right. We map them to the expected input names of the model: cam_high, cam_low, cam_left_wrist and cam_right_wrist.
-
-```python
-TrainConfig(
-        name="pi0_trossen_transfer_block",
-        model=pi0.Pi0Config(paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"),
-        data=LeRobotAlohaDataConfig(
-            use_delta_joint_actions=False,
-            adapt_to_pi=False,
-            repo_id="TrossenRoboticsCommunity/bimanual-widowxai-handover-cube",
-            assets=AssetsConfig(
-                assets_dir="gs://openpi-assets/checkpoints/pi0_base/assets",
-                asset_id="trossen",
-            ),
-            default_prompt="grab and handover the red cube",
-            repack_transforms=_transforms.Group(
-                inputs=[
-                    _transforms.RepackTransform(
-                        {
-                            "images": {
-                                "cam_high": "observation.images.top",
-                                "cam_low": "observation.images.bottom",
-                                "cam_left_wrist": "observation.images.left",
-                                "cam_right_wrist": "observation.images.right",
-                            },
-                            "state": "observation.state",
-                            "actions": "action",
-                        }
-                    )
-                ]
-            ),
-        ),
-        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_base/params"),
-        num_train_steps=20_000,
-        batch_size=2,
-        freeze_filter=pi0.Pi0Config(
-            paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"
-        ).get_freeze_filter(),
-        # Turn off EMA for LoRA finetuning.
-        ema_decay=None,
-    ),
-```
-
-We have successfully trained models on an RTX5090 and fine-tuned using LoRA.
-
-
-## Checkpoints
-
-Checkpoints are stored in the `checkpoints` folder at the root of your project directory.
-
-To use a pretrained policy, download and extract the following checkpoint into your `checkpoints` directory. This policy was trained for the Trossen AI Stationary Layout with 14 input actions:
-
-- [OpenPi Fine-Tuned Checkpoint on Hugging Face](https://huggingface.co/shantanu-tr/open_pi_finetune_checkpoint)
-
-After extraction, you can reference this checkpoint when starting the policy server.
-
-
-## Running Inference with Your Trained Policy
-
-Once training is complete and your checkpoint is ready, you can start the policy server and run the client to perform autonomous tasks.
-
-### Start the Policy Server
-
-
-This command serves the trained policy, making it available for inference.
-
-Launch the policy server using your trained checkpoint and configuration:
-
-Make sure to run this from project root. This allows us to use LeRobot V0.1.0
-```bash
-uv run scripts/serve_policy.py policy:checkpoint \
-    --policy.config=pi0_trossen_transfer_block \
-    --policy.dir=checkpoints/pi0_trossen_transfer_block/test_pi0_finetuning/19999
-```
-
-This command serves the trained policy, making it available for inference.
-
-### Start the Client
-
-
-Before starting the client we need to built the `LeRobot V0.3.2` package it needs.
-
-```bash
+# 裝 uv（若還沒有）
+curl -LsSf https://astral.sh/uv/install.sh | sh
+# 第一次跑任何 uv run 指令，uv 會自動照 uv.lock 裝好依賴
 cd examples/trossen_ai
-GIT_LFS_SKIP_SMUDGE=1 uv pip install -e .
+uv run python -c "import torch, lerobot; print('OK', torch.__version__, lerobot.__version__, torch.cuda.is_available())"
+# 預期：OK 2.7.1+cu126 0.4.1 True
+```
+π0.5 內含 gated 的 PaliGemma，需先在 huggingface.co 接受 [google/paligemma](https://huggingface.co/google/paligemma-3b-pt-224) 授權，再 `uv run hf auth login`。
+
+---
+
+## 1. 資料集與模型（在 HuggingFace Hub）
+
+| 內容 | Hub repo | 說明 |
+|---|---|---|
+| 遙操作資料集 | `Zong-Ying/banana_towel_right_arm` | 50 集、48,067 幀、30Hz、單右臂 7 維 + top/cam_wrist 雙相機（private） |
+| 微調後模型 | `Zong-Ying/pi05_banana_towel` | π0.5 expert-only 微調，30k steps |
+| 底模（供微調/對照） | `lerobot/pi05_base` | 官方未微調 π0.5（釘 revision `a538eb27...`） |
+
+拉資料集下來看（會進 `~/.cache/huggingface/lerobot/`）：
+```bash
+uv run python -c "from lerobot.datasets.lerobot_dataset import LeRobotDataset; LeRobotDataset('Zong-Ying/banana_towel_right_arm')"
+uv run lerobot-dataset-viz --repo-id Zong-Ying/banana_towel_right_arm --episode-index 0
 ```
 
-The client script requires the latest version of `LeRobot V0.3.2`, while the OpenPi repository depends on an older version `LeRobot V0.1.0` for data loading. To prevent version conflicts, the ``trossen_ai`` package uses the ``Interbotix/lerobot`` repository as its dependency. When using ``uv`` for package management, this setup creates a **separate virtual environment** for ``trossen_ai``. If you need to modify any LeRobot packages, ensure you are editing them in the **correct environment**.
+---
 
-Run the client to interact with the policy server and execute tasks autonomously.
-We will use a the `examples/trossen_ai` as root directory for running the client. This is required as the client uses a different version of `LeRobot V0.3.2` than the training environment.
+## 2. 三大流程
 
+### 流程 A — 推論（部署微調好的模型到真機）
+`single_arm_test.py`：載入 LeRobot π0/π0.5 checkpoint，連相機/手臂做推論，逐步存影像+軌跡+log。
 
 ```bash
-cd examples/trossen_ai
-uv run main.py --mode autonomous --task_prompt "grab red cube"
+# 離線測試（相機開、手臂不動；先做這個確認相機看得到物體、輸出無 NaN）
+uv run single_arm_test.py --mode test \
+    --repo_id Zong-Ying/pi05_banana_towel \
+    --wrist_serial 315122271274 \
+    --task_prompt "Pick up the banana and place it on the blue towel." --num_steps 10
+
+# 真機自主推論（右臂會動；e-stop 放手邊）
+uv run single_arm_test.py --mode autonomous \
+    --repo_id Zong-Ying/pi05_banana_towel \
+    --arm_ip 192.168.1.4 --top_serial 230422271207 --wrist_serial 315122271274 \
+    --task_prompt "Pick up the banana and place it on the blue towel." \
+    --num_steps 30 --actions_per_chunk 50
 ```
+- ⚠️ 預設 `--arm_ip` 是左臂、`--wrist_serial` 是左腕；用右臂**務必**明確指定右臂 IP/序號。
+- 第一次推論含 `torch.compile` 編譯約 7 分鐘屬正常，之後每次 ~0.2s。
+- `--actions_per_chunk 50`：執行完整 50 步再重推論（避免「下降→鬆爪」被截斷）。
 
-The client will connect to the policy server and perform the specified task using the trained model.
-
-
-You can change the cameras and arm ip address in the script `examples/trossen_ai/main.py` by editing
-
-```python
-robot_config = BiWidowXAIFollowerRobotConfig(
-            id="bimanual_follower",
-            left_arm_ip_address="192.168.1.5",
-            right_arm_ip_address="192.168.1.4",
-            min_time_to_move_multiplier=4.0,
-            loop_rate=30,
-            cameras={
-                "cam_high": RealSenseCameraConfig(
-                    serial_number_or_name="218622270304",
-                    width=640, height=480, fps=30, use_depth=False
-                ),
-                "cam_low": RealSenseCameraConfig(
-                    serial_number_or_name="130322272628",
-                    width=640, height=480, fps=30, use_depth=False
-                ),
-                "cam_right_wrist": RealSenseCameraConfig(
-                    serial_number_or_name="128422271347",
-                    width=640, height=480, fps=30, use_depth=False
-                ),
-                "cam_left_wrist": RealSenseCameraConfig(
-                    serial_number_or_name="218622274938",
-                    width=640, height=480, fps=30, use_depth=False
-                ),
-            }
-        )
-```
-
-The client script provides parameters to control both the **rate of inference** and **temporal ensembling**.
-
-The **rate of inference** determines how often the policy is queried for new actions. Since each query is computationally expensive, frequent queries reduce the control frequency to around **10 Hz**, which can lead to jerky motions. To avoid this, you should choose a rate that balances **smoothness** and **responsiveness**.
-
-- According to the Pi-0 paper, the control loop runs at **50 Hz**, with inference every **0.5 s** (after 25 actions).
-- In our case, the control loop runs at **30 Hz** to align with the camera frame rate.  
-
-Practical trade-offs:
-
-- **Rate = 50** → smoother motion, less responsive to environment changes.  
-- **Rate = 25** → more responsive, but noticeably jerky motion.  
-
-Depending on your setup, you may need to adjust this parameter for optimal performance.
-
-```python
-self.rate_of_inference = 50  # Number of control steps per policy inference
-```
-
-
-**Temporal ensembling** is a technique for smoothing the actions generated by the policy.  
-It was originally introduced in the [ACT paper](https://arxiv.org/abs/2304.13705), and later mentioned in the Pi-0 paper.
-
-While simple to implement, the **Pi-0 appendix notes that temporal ensembling can actually hurt performance**. Our own experiments confirmed this — we observed no benefit, so by default the temporal ensembling weight is set to ``None``. That said, we have included an implementation of temporal ensembling in the client script for users who wish to experiment with it.
-
-```python
-self.temporal_ensemble_coefficient = None  # Temporal ensembling weight (can be set to None for no ensembling)
-```
-The paper, however, suggests not to use temporal ensembling for the Pi-0 policy. So, by default this value will be None.
-
-## Results
-
-Here are some preliminary results from our experiments with the Pi-0 policy on the bimanual WidowX setup.
-Note that the Pi-0 base checkpoint has no episodes collected using Trossen-AI arms, so fine tuning is absolutely necessary for optimal performance. We collected a small dataset of 50 episodes for this purpose (which is very small in comparison to other robot modalities) zero shot inference using this checkpoint might be difficult as any changes in the environment, color of the blocks, shape of the objects can affect the performance.
-The dataset collected was in an extremely controlled environment with pick and placing the a red color block from same position and dropping it in the same position, this reduces the variability and helps us verify the training and evaluation pipeline. 
-
-Check the results out here:
-[Google Drive Folder](https://drive.google.com/drive/folders/1waFcKihP8uAHSsV8VM-S7eBLDdTW7jfw?usp=sharing)
-
-1. ``openpi_trossen_ai_red_block[success]`` : The robot is able to pickup and transfer the red block successfully in the second try.
-2. ``openpi_trossen_ai_blue_lego[fail]`` : The robot fails to pick up the blue Lego block, likely due to differences in block size and color affecting the model's performance.
-3. ``openpi_trossen_ai_environment_disturbances[fail]`` : The robot struggles to complete the task when the environment is disturbed, indicating sensitivity to changes in the setup.
-4. ``openpi_trossen_ai_wooden_block[fail]`` : The robot fails to pick up the wooden block, suggesting that the model may not generalize well to different object types without further training.
-
-We run this exact same command for testing each of these scenarios. The command is:
+### 流程 B — 遙操作收資料
+`record_autostage.py`（CLI 同官方 `lerobot-record`，但每集自動雙臂回 staged、語音中文、
+**錄製中不編碼影片**避免餓死手臂 UDP）＋ `encode_videos.py`（結束後補編碼，已自動串接）。
 
 ```bash
-uv run main.py --mode autonomous --task_prompt "grab red cube"
+uv run record_autostage.py \
+    --robot.type=widowxai_follower_robot --robot.ip_address=192.168.1.4 \
+    --robot.cameras='{
+        "top":       {"type": "intelrealsense", "serial_number_or_name": "230422271207", "width": 640, "height": 480, "fps": 30},
+        "cam_wrist": {"type": "intelrealsense", "serial_number_or_name": "315122271274", "width": 640, "height": 480, "fps": 30}
+    }' \
+    --teleop.type=widowxai_leader_teleop --teleop.ip_address=192.168.1.2 \
+    --display_data=true \
+    --dataset.repo_id=<你的帳號>/<資料集名> \
+    --dataset.single_task="<你的任務英文 prompt>" \
+    --dataset.fps=30 --dataset.num_episodes=10 \
+    --dataset.episode_time_s=45 --dataset.reset_time_s=15 --dataset.push_to_hub=false
 ```
+- 鍵盤：`→` 做完就按（結束本集）｜`←` 失誤重錄上一集｜`Esc` 結束。**絕對別按 Ctrl-C**（資料會壞）。
+- 分段錄（每段 10 集，第 2 段起加 `--resume=true`）；示範要一氣呵成，示範品質＝模型品質上限。
+- 錄完驗收＋推 Hub：見流程 A 的 viz 指令，確認過再 `push_to_hub`。
 
-The task prompt remains the same for all tests, as we haven't collected any data for other object types or scenarios.
-
-
-If you want to run the client in test mode (no movement, just logs the actions that would be taken), you can use the following command:
-
+### 流程 C — 微調 π0.5（5090 伺服器）
+`train_pi05_expert_only.py`：凍結 PaliGemma VLM、只訓 action expert（693M），
+因為全參數 4B 的 AdamW 狀態 ~29GB 塞不進 32GB VRAM。在伺服器 `conda activate lerobot` 後執行：
 ```bash
-uv run main.py --mode test --task_prompt "grab red cube"
+python train_pi05_expert_only.py \
+    --dataset.repo_id=<你的帳號>/<資料集名> \
+    --policy.type=pi05 --policy.pretrained_path=$HOME/models/pi05_base \
+    --output_dir=$HOME/outputs/<job名> --job_name=<job名> \
+    --num_workers=4 --log_freq=20 \
+    --policy.compile_model=true --policy.gradient_checkpointing=true \
+    --policy.dtype=bfloat16 --policy.device=cuda \
+    --batch_size=8 --steps=30000 --save_freq=10000 \
+    --policy.repo_id=<你的帳號>/<模型名> --policy.push_to_hub=true \
+    --wandb.enable=true --wandb.project=<wandb專案>
 ```
+訓練完 checkpoint 自動推上 Hub，回筆電用流程 A 直接指 `--repo_id` 部署，不用 scp。
+（環境安裝有很多坑：torch cu128、transformers fork、pi05_base 釘 revision 等，見下方 Notion。）
+
+### （對照）base 未微調
+`single_arm_base_test.py`：跑未微調的 `lerobot/pi05_base` 當對照組，量化微調貢獻。
+需先 `uv run hf download lerobot/pi05_base --revision a538eb273274eb30f126a118f39dbc0ee212c883 --local-dir ~/models/pi05_base`。
+用法同流程 A 的 test/autonomous（詳見腳本 docstring）。實測：未微調 base 0/10，微調後 7/10。
+
+---
+
+## 3. 檔案總覽
+| 檔案 | 說明 |
+|---|---|
+| `single_arm_test.py` | 推論（微調 / 公開模型），test + autonomous |
+| `single_arm_base_test.py` | 推論未微調 base 對照組 |
+| `record_autostage.py` | 遙操作收資料（自動回 staged、錄製中不編碼） |
+| `encode_videos.py` | 收完補編碼影片（record 結尾自動呼叫；也可獨立跑） |
+| `train_pi05_expert_only.py` | 5090 上 expert-only 微調（凍 VLM） |
+| `camera_preview.py` / `pose_left_arm.py` | 相機預覽 / 手臂姿勢小工具 |
+| `main.py` | openpi websocket client（原始檔改過） |
+
+---
+
+## 4. 延伸閱讀（實驗室 Notion，需工作區權限）
+- **PDCA 主計畫**（收資料→微調→部署全流程＋踩坑排除總表）：<https://app.notion.com/p/39e1504dd82281e0ac06efa26c3e14e6>
+- **教學文件**（各階段指令＋debug 心法）：<https://app.notion.com/p/3a41504dd8228157ae0cd7d7cfbdf8fd>
+- **base 未微調對照實驗**（含「從零複現」完整指南）：<https://app.notion.com/p/3a41504dd822818ea7dde7d19a406694>
+- **微調 10 次實測（70%）**：<https://app.notion.com/p/3a41504dd82280158d0bedfa1217cfa7>
+
+## 5. 幾個最容易踩的坑（完整見 Notion 踩坑表）
+- 手臂 UDP 崩潰、卡 handshake → 控制器**斷電重啟**（ping 得到不代表活著）。
+- 錄製時看到 `Svt[info]` 刷屏不是當機，是編碼器訊息。**別按 Ctrl-C**。
+- 上游 `lerobot/pi05_base` 版本會漂移 → 一律**釘 revision `a538eb27...`**。
+- base 出廠 float32(14GB)+mps → 12GB GPU 要用 bfloat16 + 先 CPU 載入再 `.to(cuda)`（`single_arm_base_test.py` 已處理）。
+- 訓練 GPU「假忙」（util 100% 但功耗只有 ~130W）＝ VRAM 溢出，**看功耗不看利用率**。
+
+---
+
+## 來源 / 上游專案
+本專案是在以下開源專案上新增遙操作 / 推論 / 微調腳本，感謝上游作者：
+
+| 專案 | 角色 |
+|---|---|
+| [TrossenRobotics/openpi](https://github.com/TrossenRobotics/openpi) | 本 repo 的**直接基礎**（fork 自 openpi，含 `examples/trossen_ai` 與 `uv.lock` 環境） |
+| [TrossenRobotics/lerobot_trossen](https://github.com/TrossenRobotics/lerobot_trossen) | **Trossen AI / Mobile ALOHA 的 LeRobot plugin**，提供 `widowxai_follower_robot`、`widowxai_leader_teleop`、`bi_widowxai_*`、`mobileai_*` 等機器人 |
+| [Physical-Intelligence/openpi](https://github.com/Physical-Intelligence/openpi) | π0 / π0.5 VLA 原始實作（openpi 上游） |
+| [huggingface/lerobot](https://github.com/huggingface/lerobot) | LeRobot（PyTorch 資料集 / 訓練 / 推論框架，本專案用 0.4.1） |
+| [lerobot/pi05_base](https://huggingface.co/lerobot/pi05_base) | π0.5 底模（openpi checkpoint 的 LeRobot PyTorch 移植） |
+| [Trossen 官方文件](https://docs.trossenrobotics.com/trossen_arm/main/tutorials/openpi.html) | 硬體 / openpi 教學 / lerobot plugin 收資料指南 |

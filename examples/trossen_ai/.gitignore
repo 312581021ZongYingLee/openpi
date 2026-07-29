@@ -1,0 +1,17 @@
+# === 大檔案：放 HuggingFace Hub，不進 GitHub ===
+# 推論輸出（每步影像 / action chunk / 軌跡圖 / log.jsonl）
+outputs/
+outputs_base/
+# symlink → ~/.cache/huggingface/lerobot（38GB 資料集，勿追蹤）
+datasets
+# 下載的模型權重（pi05_base 等）
+models/
+*.safetensors
+*.mp4
+
+# === Python ===
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+.ipynb_checkpoints/

@@ -54,29 +54,33 @@ class TrossenOpenPIBridge:
             host=policy_server_host, port=policy_server_port
         )
 
-        robot_config = BiWidowXAIFollowerRobotConfig(
-            id="bimanual_follower",
-            left_arm_ip_address="192.168.1.5",
-            right_arm_ip_address="192.168.1.4",
-            min_time_to_move_multiplier=4.0,
-            loop_rate=30,
-            cameras={
-                "cam_high": RealSenseCameraConfig(
-                    serial_number_or_name="218622270304", width=640, height=480, fps=30, use_depth=False
-                ),
-                "cam_low": RealSenseCameraConfig(
-                    serial_number_or_name="130322272628", width=640, height=480, fps=30, use_depth=False
-                ),
-                "cam_right_wrist": RealSenseCameraConfig(
-                    serial_number_or_name="128422271347", width=640, height=480, fps=30, use_depth=False
-                ),
-                "cam_left_wrist": RealSenseCameraConfig(
-                    serial_number_or_name="218622274938", width=640, height=480, fps=30, use_depth=False
-                ),
-            },
-        )
-        self.robot = make_robot_from_config(robot_config)
-        self.robot.connect()
+        if self.test_mode != "test":
+            robot_config = BiWidowXAIFollowerRobotConfig(
+                id="bimanual_follower",
+                left_arm_ip_address="192.168.1.5",
+                right_arm_ip_address="192.168.1.4",
+                min_time_to_move_multiplier=4.0,
+                loop_rate=30,
+                cameras={
+                    "cam_high": RealSenseCameraConfig(
+                        serial_number_or_name="230422271207", width=640, height=480, fps=30, use_depth=False
+                    ),
+                    "cam_low": RealSenseCameraConfig(
+                        serial_number_or_name="230422271207", width=640, height=480, fps=30, use_depth=False
+                    ),
+                    "cam_right_wrist": RealSenseCameraConfig(
+                        serial_number_or_name="315122271274", width=640, height=480, fps=30, use_depth=False
+                    ),
+                    "cam_left_wrist": RealSenseCameraConfig(
+                        serial_number_or_name="315122272759", width=640, height=480, fps=30, use_depth=False
+                    ),
+                },
+            )
+            self.robot = make_robot_from_config(robot_config)
+            self.robot.connect()
+        else:
+            self.robot = None
+            logger.info("TEST MODE: Skipping arm connection")
 
         self.current_action_chunk = None
         self.action_chunk_idx = 0
@@ -95,7 +99,7 @@ class TrossenOpenPIBridge:
             self.max_steps + self.action_chunk_size
         )  # Buffer size to hold actions for the entire episode
 
-        self.action_dim = len(self.robot.action_features)  # action_features = 7 dims per arm (6 joints + gripper) * 2 arms = 14
+        self.action_dim = len(self.robot.action_features) if self.robot is not None else 14  # 7 joints per arm × 2 arms
 
     def execute_action(self, action: np.ndarray):
         """Execute action on the arm."""
@@ -153,21 +157,28 @@ class TrossenOpenPIBridge:
 
             # Request new action chunk after consuming the previous one
             if self.current_action_chunk is None or self.action_chunk_idx >= self.rate_of_inference:
-                observation_dict = self.robot.get_observation()
+                if self.robot is not None:
+                    observation_dict = self.robot.get_observation()
 
-                # Extract joint positions from observation
-                joint_pos_keys = [k for k in observation_dict.keys() if k.endswith(".pos")]
-                joint_positions = np.array([observation_dict[k] for k in joint_pos_keys])
+                    # Extract joint positions from observation
+                    joint_pos_keys = [k for k in observation_dict.keys() if k.endswith(".pos")]
+                    joint_positions = np.array([observation_dict[k] for k in joint_pos_keys])
 
-                # Transform and resize images from all cameras
-                cameras = list(self.robot._cameras_ft.keys())
-                for cam in cameras:
-                    image_hwc = observation_dict[cam]
-                    # convert BGR to RGB
-                    image_resized = cv2.resize(image_hwc, (224, 224))
-                    image_rgb = cv2.cvtColor(image_resized, cv2.COLOR_BGR2RGB)
-                    image_chw = np.transpose(image_rgb, (2, 0, 1))
-                    observation_dict[cam] = image_chw
+                    # Transform and resize images from all cameras
+                    cameras = list(self.robot._cameras_ft.keys())
+                    for cam in cameras:
+                        image_hwc = observation_dict[cam]
+                        # convert BGR to RGB
+                        image_resized = cv2.resize(image_hwc, (224, 224))
+                        image_rgb = cv2.cvtColor(image_resized, cv2.COLOR_BGR2RGB)
+                        image_chw = np.transpose(image_rgb, (2, 0, 1))
+                        observation_dict[cam] = image_chw
+                else:
+                    # TEST MODE: use dummy observations (no robot/cameras connected)
+                    cameras = ["cam_high", "cam_low", "cam_right_wrist", "cam_left_wrist"]
+                    joint_positions = np.zeros(self.action_dim)
+                    observation_dict = {cam: np.zeros((3, 224, 224), dtype=np.uint8) for cam in cameras}
+                    logger.info("TEST MODE: Using dummy observations (zeros)")
 
                 # Create observation for policy to follow the ALOHA format
                 observation = {
@@ -200,8 +211,9 @@ class TrossenOpenPIBridge:
                 a_t = self.current_action_chunk[self.action_chunk_idx]
             # Execute the current action
             if is_first_step:
-                logger.info("Moving to start position to avoid large jumps...")
-                self.move_to_start_position(a_t, duration=5.0)
+                if self.robot is not None:
+                    logger.info("Moving to start position to avoid large jumps...")
+                    self.move_to_start_position(a_t, duration=5.0)
                 is_first_step = False
             else:
                 self.execute_action(a_t)
@@ -233,7 +245,8 @@ class TrossenOpenPIBridge:
     def cleanup(self):
         """Clean up resources."""
         logger.info("Cleaning up...")
-        self.robot.disconnect()
+        if self.robot is not None:
+            self.robot.disconnect()
 
 
 if __name__ == "__main__":

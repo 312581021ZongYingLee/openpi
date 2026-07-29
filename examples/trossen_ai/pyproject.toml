@@ -12,6 +12,9 @@ dependencies = [
     "openpi-client",
     "lerobot_trossen",
     "scipy>=1.10.1",
+    "matplotlib>=3.11.0",
+    "transformers>=4.53.0,<5",
+    "trossen-arm==1.9.3",
 ]
 
 [tool.uv]
@@ -25,6 +28,7 @@ allow-direct-references = true
 openpi-client = { path = "../../packages/openpi-client" }
 lerobot_trossen = { git = "https://github.com/TrossenRobotics/lerobot_trossen.git", rev = "810e60a3d973fa9b23b16db68613c0d4ee03b753" }
 dlimp = { git = "https://github.com/kvablack/dlimp", rev = "ad72ce3a9b414db2185bc0b38461d4101a65477a" }
+transformers = { git = "https://github.com/huggingface/transformers.git", rev = "fix/lerobot_openpi" }
 
 [tool.uv.workspace]
 members = ["packages/*"]
