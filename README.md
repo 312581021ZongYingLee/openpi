@@ -1,3 +1,14 @@
+<!-- ===== NYCU RossiLab fork 導引（openpi 原始說明在下方） ===== -->
+> 🔬 **NYCU RossiLab — Trossen AI (Mobile ALOHA) × π0.5 實作 pipeline**
+>
+> 本 fork 在 openpi 之上新增了實驗室的完整流程：**遙操作收資料 → 微調 π0.5 → 真機推論部署**（含未微調 base 對照實驗）。
+>
+> 👉 **接手的學弟妹請看交接教學：[`examples/trossen_ai/README.md`](examples/trossen_ai/README.md)** — 硬體、環境、三大流程指令、踩坑一次到位。
+>
+> 以下為 openpi 官方原始說明。
+
+---
+
 # openpi
 
 openpi holds open-source models and packages for robotics, published by the [Physical Intelligence team](https://www.physicalintelligence.company/).
