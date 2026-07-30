@@ -143,6 +143,37 @@ python train_pi05_expert_only.py \
 需先 `uv run hf download lerobot/pi05_base --revision a538eb273274eb30f126a118f39dbc0ee212c883 --local-dir ~/models/pi05_base`。
 用法同流程 A 的 test/autonomous（詳見腳本 docstring）。實測：未微調 base 0/10，微調後 7/10。
 
+### 載入「別人微調好的模型」做推論
+先看那個模型是什麼**格式**，決定用哪個腳本——這是最容易卡住的地方：
+
+| 模型格式 | 怎麼判斷 | 用哪個腳本 |
+|---|---|---|
+| **LeRobot PyTorch**（`config.json` + `model.safetensors` + processor JSON） | HF 頁面有 `model.safetensors`；能 `PI0Policy/PI05Policy.from_pretrained` | **`single_arm_test.py --repo_id <帳號>/<模型>`**（同流程 A，換 repo_id 即可） |
+| **openpi 原生 JAX / orbax**（`params/` 目錄、`gs://openpi-assets/...`） | HF/GCS 有 `params/ocdbt.*`、無 safetensors | 不能用上面的腳本；要 **openpi JAX server + client**（見下） |
+
+**A. LeRobot PyTorch 模型（單臂，最常見）**——直接換 `--repo_id`：
+```bash
+# 例：跑社群單臂 widowx 模型（先 test 確認維度/相機鍵對得上、無 NaN，再上真機）
+uv run single_arm_test.py --mode test --repo_id <帳號>/<模型名> \
+    --wrist_serial 315122271274 --task_prompt "<英文 prompt>" --num_steps 10
+```
+腳本會**從 checkpoint 的 config 自動讀**相機鍵 / state 維 / action 維，所以只要對方的相機鍵（如 `top`/`cam_wrist`）和關節佈局對得上就能跑；對不上會在 test 模式就報錯，不會傷到手臂。
+
+**B. openpi 原生 JAX 模型（官方 / 雙臂 ALOHA）**——用 `serve_policy.py` + `main_aloha.py`（兩終端、兩 venv）：
+```bash
+# 終端 A（repo 根、根 .venv 的 JAX）：起 policy server
+cd ~/Desktop/openpi
+XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 uv run scripts/serve_policy.py policy:checkpoint \
+    --policy.config=<config名> --policy.dir=<gs://... 或本地 checkpoint 路徑>
+# 終端 B（examples/trossen_ai）：雙臂 client，先 test 自檢再上真機
+uv run main_aloha.py --mode test --task_prompt "<英文 prompt>"
+uv run main_aloha.py --mode autonomous --model_tag <標記> \
+    --task_prompt "<英文 prompt>" --max_steps 1200 [--right_arm_only]
+```
+- `--policy.config` 決定 **embodiment 轉換**：經典 ALOHA 模型用 `adapt_to_pi=True` 的 config（夾爪走 Interbotix 換算）；**Trossen 手臂**要用 `adapt_to_pi=False` 的 config（如 `pi05_trossen_transfer_block`），否則夾爪會差 ~20 倍被鎖死。
+- `main_aloha.py` 內建：關節極限 clamp（Trossen 驅動對超限零容忍，連 +2µm 都會 fault→崩潰）、即時 3 相機視窗（`--no_display` 關）、`--right_arm_only`（凍結左臂只動右臂，較安全）、Ctrl-C 溫和停止、輕量錄影到 `outputs_aloha/`。
+- ⚠️ **跨機器人/跨場景通常無法零樣本遷移**：實測官方 `pi0_aloha_towel`（經典 ALOHA）夾爪 20× 不匹配；官方 Trossen 桌面模型雖能抓取，但因任務/相機/場景不同仍無法完成自訂任務。要在本實驗室 Mobile ALOHA 上做事，還是得走流程 B+C 用自己的資料微調（完整分析見下方 Notion）。
+
 ---
 
 ## 3. 檔案總覽
@@ -155,6 +186,7 @@ python train_pi05_expert_only.py \
 | `train_pi05_expert_only.py` | 5090 上 expert-only 微調（凍 VLM） |
 | `camera_preview.py` / `pose_left_arm.py` | 相機預覽 / 手臂姿勢小工具 |
 | `main.py` | openpi websocket client（原始檔改過） |
+| `main_aloha.py` | openpi JAX 雙臂 client（載入官方/JAX 模型：關節 clamp＋即時 3 相機＋`--right_arm_only`） |
 
 ---
 
@@ -163,6 +195,7 @@ python train_pi05_expert_only.py \
 - **教學文件**（各階段指令＋debug 心法）：<https://app.notion.com/p/3a41504dd8228157ae0cd7d7cfbdf8fd>
 - **base 未微調對照實驗**（含「從零複現」完整指南）：<https://app.notion.com/p/3a41504dd822818ea7dde7d19a406694>
 - **微調 10 次實測（70%）**：<https://app.notion.com/p/3a41504dd82280158d0bedfa1217cfa7>
+- **官方 openpi 模型測試**（載入他人/官方模型的三層遷移結論）：<https://app.notion.com/p/3ad1504dd822814e8d90f14a021f9e03>
 
 ## 5. 幾個最容易踩的坑（完整見 Notion 踩坑表）
 - 手臂 UDP 崩潰、卡 handshake → 控制器**斷電重啟**（ping 得到不代表活著）。

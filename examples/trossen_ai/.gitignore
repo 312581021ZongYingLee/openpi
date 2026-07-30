@@ -2,6 +2,8 @@
 # 推論輸出（每步影像 / action chunk / 軌跡圖 / log.jsonl）
 outputs/
 outputs_base/
+# 官方模型測試輸出（相機幀 / executed_actions.npy / action_chunks.npy / log）
+outputs_aloha/
 # symlink → ~/.cache/huggingface/lerobot（38GB 資料集，勿追蹤）
 datasets
 # 下載的模型權重（pi05_base 等）
